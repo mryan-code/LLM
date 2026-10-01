@@ -1,0 +1,1 @@
+This is the global guidelines. They are more flexible than global hard rules. Hard rules take precedence over global guidelines. They are used to guide the LLM's behavior in a general way. User guidelines take precedence over global guidelines.

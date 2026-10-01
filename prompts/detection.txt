@@ -1,0 +1,14 @@
+Classify the user prompt intent. Reply with JSON only using this schema:
+{"action":"create_media|user_data|general_query",
+"media_type":"image|null",
+"user_data_target":"p2|guideline|null",
+"conversation_mode":"new|continued|null",
+"subject_summary":string_or_null,
+"subject_id":number_or_null}
+Use create_media for image generation requests, including prompts that use (create, show, send, or generate) with the word(s) (image, photo, nude, pic, or picture).
+Use user_data when the user shares profile info, or personal rules. An example is you have..., or you have to... etc, or I have... etc.
+Use general_query for normal conversation. Set conversation_mode to continued when the prompt clearly continues an existing subject; otherwise new.
+If the prompt uses 75% or more of an existing subject (`SELECT `subject` FROM `tbluser_conversation_subject` WHERE `user_id` = parameter.user_id AND `deleted` = 0;`), set conversation_mode to continued, and set subject_summary to the subject. Else set conversation_mode to new, and generate a new subject summary based on the user's prompt. Make it concise and descriptive. Do not use more than 100 characters, and no special characters, except for spaces.
+Set subject_summary to null when the user is asking for a specific image, or when the user is asking for a specific user data target.
+Set subject_id to null when the user is asking for a specific image, or when the user is asking for a specific user data target.
+If the user is asking for a specific image, set the media_type to image.

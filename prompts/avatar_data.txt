@@ -1,0 +1,1 @@
+This is the avatar data. It describes how the LLM refers to the user and itself, including persona balances and pronouns.

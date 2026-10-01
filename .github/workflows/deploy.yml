@@ -1,0 +1,317 @@
+name: Deploy to HOST
+run-name: Deploy to HOST (${{ github.event.head_commit.timestamp }})
+
+on:
+    push:
+        branches:
+            - main # Triggers the workflow anytime you push changes to the main branch
+
+jobs:
+    deploy:
+        # Use DEPLOY_RUNNER repo variable (for example: self-hosted) when the target host is private-network only.
+        runs-on: "ubuntu-latest"
+        env:
+            DEPLOY_HOST: 'dev-domain.duckdns.org'
+            DEPLOY_PORT: '22'
+            DEPLOY_USERNAME: 'inkt'
+            DEPLOY_PATH: '~/Documents/Personal/storm_zero/llm/Storm-Zero-LLM'
+            SSH_KEEPALIVE_OPTIONS: "-o ServerAliveInterval=30 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes"
+
+        steps:
+            # Download the repository files onto the GitHub runner runner
+            - name: Checkout Code
+              uses: actions/checkout@v4
+
+            # Connect to HOST via SSH
+            - name: Connect to HOST via SSH
+              run: |
+                  echo "Preparing HOST SSH key."
+                  mkdir -p ~/.ssh
+                  printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > "$HOME/.ssh/deploy_key"
+                  chmod 600 "$HOME/.ssh/deploy_key"
+                  echo "HOST SSH key is ready."
+
+            - name: SSH network preflight
+              run: |
+                  set -euo pipefail
+                  echo "Validating TCP reachability to ${DEPLOY_HOST}:${DEPLOY_PORT}."
+                  # High-risk operation: validates remote network connectivity before deployment to avoid partial deploy side effects.
+                  if ! timeout 10 bash -c "</dev/tcp/${DEPLOY_HOST}/${DEPLOY_PORT}"; then
+                    echo "Unable to reach ${DEPLOY_HOST}:${DEPLOY_PORT} from GitHub runner." >&2
+                    echo "Check HOST firewall/security group/NAT and ensure DEPLOY_PORT is correct in repository or environment secrets." >&2
+                    exit 1
+                  fi
+                  echo "TCP preflight passed."
+
+            # Stop the running server if it is running
+            - name: Stop the running server if it is running (${{ secrets.SERVER_PORT }})
+              env:
+                  SERVER_PORT: ${{ secrets.SERVER_PORT }}
+              run: |
+                  set -euo pipefail
+                  echo "Stopping remote server if it is running."
+                  # High-risk operation: this stops the remote HOST service and must finish before deploy continues.
+                  ssh \
+                    $SSH_KEEPALIVE_OPTIONS \
+                    -p "$DEPLOY_PORT" \
+                    -i "$HOME/.ssh/deploy_key" \
+                    -o IdentitiesOnly=yes \
+                    -o StrictHostKeyChecking=no \
+                    -o BatchMode=yes \
+                    -o PasswordAuthentication=no \
+                    "$DEPLOY_USERNAME@$DEPLOY_HOST" \
+                    "SERVER_PORT='$SERVER_PORT' DEPLOY_PATH='$DEPLOY_PATH' bash -s" <<'REMOTE_COMMAND'
+                  set -euo pipefail
+                  deploy_path="${DEPLOY_PATH/#\~/$HOME}"
+                  if [ ! -d "$deploy_path" ]; then
+                    echo "Deploy directory does not exist yet; skipping script stop."
+                    exit 0
+                  fi
+                  cd "$deploy_path"
+                  if ! command -v pm2 >/dev/null 2>&1; then
+                    echo "pm2 is not installed; skipping PM2 stop."
+                    if [ -f .storm-zero-llm.pid ]; then
+                      legacy_pid="$(cat .storm-zero-llm.pid)"
+                      if [ -n "$legacy_pid" ] && kill -0 "$legacy_pid" 2>/dev/null; then
+                        echo "Stopping legacy PID-file server with PID ${legacy_pid}."
+                        kill "$legacy_pid"
+                      else
+                        echo "Removing stale legacy PID file."
+                      fi
+                      rm -f .storm-zero-llm.pid
+                    fi
+                    exit 0
+                  fi
+
+                  read_env_value() {
+                    local key="$1"
+                    local env_file=".env"
+                    [[ -f "$env_file" ]] || return 1
+
+                    awk -F= -v key="$key" '
+                      $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+                        value = $0
+                        sub(/^[^=]*=/, "", value)
+                        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+                        gsub(/^["\047]|["\047]$/, "", value)
+                        print value
+                        exit
+                      }
+                    ' "$env_file"
+                  }
+
+                  if [ -x ./scripts/stop.sh ]; then
+                    if ! ./scripts/stop.sh; then
+                      pm2_app_from_env="$(read_env_value PM2_APP || true)"
+                      if [ -z "${pm2_app_from_env// }" ]; then
+                        echo "PM2_APP is not configured yet; skipping stop on initial deploy."
+                      else
+                        echo "scripts/stop.sh failed unexpectedly." >&2
+                        exit 1
+                      fi
+                    fi
+                  else
+                    echo "scripts/stop.sh not deployed yet; skipping script stop."
+                  fi
+                  REMOTE_COMMAND
+
+            # Deploy to HOST via Rsync
+            - name: Deploy to HOST via Rsync
+              run: |
+                  set -euo pipefail
+                  deploy_path="${DEPLOY_PATH%/}"
+                  echo "Starting rsync deploy to HOST."
+                  # High-risk operation: this writes the repository contents to the remote HOST app directory.
+                  # Load the deploy key into ssh-agent because rsync opens its own SSH session.
+                  eval "$(ssh-agent -s)"
+                  control_path="$RUNNER_TEMP/nas_rsync_control"
+                  trap 'ssh $SSH_KEEPALIVE_OPTIONS -p "$DEPLOY_PORT" -o ControlPath="$control_path" -O exit "$DEPLOY_USERNAME@$DEPLOY_HOST" >/dev/null 2>&1 || true; ssh-agent -k' EXIT
+                  ssh-add "$HOME/.ssh/deploy_key"
+
+                  ssh \
+                    $SSH_KEEPALIVE_OPTIONS \
+                    -p "$DEPLOY_PORT" \
+                    -o StrictHostKeyChecking=no \
+                    -o UserKnownHostsFile=/dev/null \
+                    -o BatchMode=yes \
+                    -o PasswordAuthentication=no \
+                    "$DEPLOY_USERNAME@$DEPLOY_HOST" \
+                    "mkdir -p ${deploy_path}"
+                  echo "Remote deploy directory is ready."
+
+                  # Confirm the HOST can run rsync and write to the target before starting the transfer.
+                  echo "Checking remote rsync and deploy directory permissions."
+                  remote_rsync_path="$(ssh \
+                    $SSH_KEEPALIVE_OPTIONS \
+                    -p "$DEPLOY_PORT" \
+                    -o StrictHostKeyChecking=no \
+                    -o UserKnownHostsFile=/dev/null \
+                    -o BatchMode=yes \
+                    -o PasswordAuthentication=no \
+                    "$DEPLOY_USERNAME@$DEPLOY_HOST" \
+                    "command -v rsync")"
+                  ssh \
+                    $SSH_KEEPALIVE_OPTIONS \
+                    -p "$DEPLOY_PORT" \
+                    -o StrictHostKeyChecking=no \
+                    -o UserKnownHostsFile=/dev/null \
+                    -o BatchMode=yes \
+                    -o PasswordAuthentication=no \
+                    "$DEPLOY_USERNAME@$DEPLOY_HOST" \
+                    "test -x '$remote_rsync_path' && test -w $deploy_path"
+                  echo "Remote rsync preflight passed."
+
+                  # Reuse one authenticated SSH control connection so rsync does not need a fresh login.
+                  echo "Opening reusable SSH connection for rsync."
+                  ssh \
+                    -MNf \
+                    $SSH_KEEPALIVE_OPTIONS \
+                    -p "$DEPLOY_PORT" \
+                    -o ControlMaster=yes \
+                    -o ControlPath="$control_path" \
+                    -o ControlPersist=60 \
+                    -o StrictHostKeyChecking=no \
+                    -o UserKnownHostsFile=/dev/null \
+                    -o BatchMode=yes \
+                    -o PasswordAuthentication=no \
+                    "$DEPLOY_USERNAME@$DEPLOY_HOST"
+                  ssh $SSH_KEEPALIVE_OPTIONS -p "$DEPLOY_PORT" -o ControlPath="$control_path" -O check "$DEPLOY_USERNAME@$DEPLOY_HOST"
+                  echo "Reusable SSH connection is ready."
+
+                  echo "Syncing repository files to HOST."
+                  # Keep the HOST deploy directory in sync to avoid stale TypeScript files from prior apps/releases.
+                  rsync \
+                    -az \
+                    --progress \
+                    --stats \
+                    --delete \
+                    --exclude='.git' \
+                    --exclude='.github' \
+                    --exclude='.vscode' \
+                    --exclude='custom_models' \
+                    --exclude='dedicated_models' \
+                    --exclude='models' \
+                    --exclude='data' \
+                    --filter='P .env' \
+                    --filter='P .venv/' \
+                    --filter='P node_modules/' \
+                    --filter='P models/' \
+                    --filter='P data/' \
+                    --rsync-path="$remote_rsync_path" \
+                    -e "ssh $SSH_KEEPALIVE_OPTIONS -p $DEPLOY_PORT -o ControlMaster=auto -o ControlPath=$control_path -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o PasswordAuthentication=no" \
+                    ./ \
+                    "$DEPLOY_USERNAME@$DEPLOY_HOST:${deploy_path}/"
+                  echo "Rsync deploy finished."
+
+            # Install dependencies after syncing code
+            - name: Install Package
+              run: |
+                  set -euo pipefail
+                  echo "Installing package on HOST."
+                  # High-risk operation: this installs dependencies on the remote HOST after files are synced.
+                  ssh \
+                    $SSH_KEEPALIVE_OPTIONS \
+                    -p "$DEPLOY_PORT" \
+                    -i "$HOME/.ssh/deploy_key" \
+                    -o IdentitiesOnly=yes \
+                    -o StrictHostKeyChecking=no \
+                    -o BatchMode=yes \
+                    -o PasswordAuthentication=no \
+                    "$DEPLOY_USERNAME@$DEPLOY_HOST" \
+                    "DEPLOY_PATH='$DEPLOY_PATH' bash -lc '
+                      set -euo pipefail
+                      deploy_path="\${DEPLOY_PATH/#\~/\$HOME}"
+                      if ! command -v pm2 >/dev/null 2>&1; then
+                        if ! command -v npm >/dev/null 2>&1; then
+                          echo "npm is required to install pm2." >&2
+                          exit 1
+                        fi
+                        npm install -g pm2
+                      fi
+                      cd "\$deploy_path"
+                      chmod +x ./scripts/install.sh
+                      ./scripts/install.sh
+                      echo package install finished.
+                    '"
+
+            # Start the server
+            - name: Start the server
+              env:
+                  SERVER_PORT: ${{ secrets.SERVER_PORT }}
+              run: |
+                  set -euo pipefail
+                  echo "Starting server on HOST."
+                  # High-risk operation: this starts the remote HOST service and waits for the port to listen.
+                  ssh \
+                    $SSH_KEEPALIVE_OPTIONS \
+                    -p "$DEPLOY_PORT" \
+                    -i "$HOME/.ssh/deploy_key" \
+                    -o IdentitiesOnly=yes \
+                    -o StrictHostKeyChecking=no \
+                    -o BatchMode=yes \
+                    -o PasswordAuthentication=no \
+                    "$DEPLOY_USERNAME@$DEPLOY_HOST" \
+                    "SERVER_PORT='$SERVER_PORT' DEPLOY_PATH='$DEPLOY_PATH' bash -l -s" <<'REMOTE_COMMAND'
+                  set -euo pipefail
+                  deploy_path="${DEPLOY_PATH/#\~/$HOME}"
+                  cd "$deploy_path"
+                  if [ -f ".env" ]; then
+                    env_llm_port="$(awk -F= '/^LLM_PORT=/ { gsub(/["[:space:]]/, "", $2); print $2; exit }' .env)"
+                    if [ -n "$env_llm_port" ]; then
+                      SERVER_PORT="$env_llm_port"
+                    fi
+                  fi
+                  echo "Waiting for server readiness on port ${SERVER_PORT}."
+                  chmod +x ./scripts/start.sh ./scripts/stop.sh
+
+                  read_env_value() {
+                    local key="$1"
+                    local env_file=".env"
+                    [[ -f "$env_file" ]] || return 1
+
+                    awk -F= -v key="$key" '
+                      $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+                        value = $0
+                        sub(/^[^=]*=/, "", value)
+                        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+                        gsub(/^["\047]|["\047]$/, "", value)
+                        print value
+                        exit
+                      }
+                    ' "$env_file"
+                  }
+
+                  pm2_app="${PM2_APP:-$(read_env_value PM2_APP || true)}"
+                  llm_host="${LLM_HOST:-$(read_env_value LLM_HOST || true)}"
+                  if [ -z "${llm_host// }" ]; then
+                    llm_host="127.0.0.1"
+                  fi
+                  if [ -n "${pm2_app// }" ] && command -v pm2 >/dev/null 2>&1; then
+                    if pm2 describe "$pm2_app" >/dev/null 2>&1; then
+                      echo "Deleting existing PM2 app $pm2_app to ensure fresh start args."
+                      pm2 delete "$pm2_app" >/dev/null 2>&1 || true
+                    fi
+                  fi
+
+                  # High-risk operation: start.sh starts or restarts the PM2-managed server.
+                  LLM_HOST="$llm_host" LLM_PORT="$SERVER_PORT" ./scripts/start.sh --background --seed-foundation
+
+                  server_health_ok() {
+                    curl -sf --max-time 3 "http://127.0.0.1:${SERVER_PORT}/health" >/dev/null 2>&1
+                  }
+
+                  for attempt in $(seq 1 60); do
+                    if server_health_ok; then
+                      echo "Server startup confirmed."
+                      echo "Health check passed at http://127.0.0.1:${SERVER_PORT}/health"
+                      exit 0
+                    fi
+                    if [ "$((attempt % 20))" -eq 0 ]; then
+                      echo "Still waiting for server to start after ${attempt} seconds."
+                    fi
+                    sleep 1
+                  done
+
+                  echo "Server readiness was not confirmed within 60 seconds." >&2
+                  exit 1
+                  REMOTE_COMMAND

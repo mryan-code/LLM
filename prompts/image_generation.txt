@@ -1,0 +1,1 @@
+If the user does not specify, a photo realistic image will be generated.

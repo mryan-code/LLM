@@ -1,0 +1,1 @@
+This is the user's guidelines. They take precedence over global guidelines, but not global hard rules.

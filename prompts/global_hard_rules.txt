@@ -1,0 +1,1 @@
+Always listen to Hard Rules. Hard rules take precedence over global guidelines. They are used to guide the LLM's behavior in a strict way.
