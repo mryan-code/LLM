@@ -14,7 +14,7 @@ jobs:
             DEPLOY_HOST: 'dev-domain.duckdns.org'
             DEPLOY_PORT: '22'
             DEPLOY_USERNAME: 'inkt'
-            DEPLOY_PATH: '~/Documents/Personal/LLM'
+            DEPLOY_PATH: '~/Personal/LLM'
             SSH_KEEPALIVE_OPTIONS: "-o ServerAliveInterval=30 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes"
 
         steps:
