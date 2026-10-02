@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import hmac
 import json
+import os
 import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from storm_zero_llm.agent import StormZeroAgent
+from storm_zero_llm.image_generation import (
+    ImageGenerationConfig,
+    ImageGenerator,
+    create_image_generator,
+)
 from storm_zero_llm.training_db import parse_user_id
 from storm_zero_llm.tts import KokoroTTSService, TTSResult
 
@@ -16,6 +23,7 @@ from storm_zero_llm.tts import KokoroTTSService, TTSResult
 class StormZeroRequestHandler(BaseHTTPRequestHandler):
     agent: StormZeroAgent
     _tts_service: KokoroTTSService | None = None
+    _image_generator: ImageGenerator | None = None
     _file_data_url_start_pattern = re.compile(r"data:([^;,\s]+);base64,([A-Za-z0-9+/=]*)", re.IGNORECASE)
 
     def do_GET(self) -> None:
@@ -31,6 +39,7 @@ class StormZeroRequestHandler(BaseHTTPRequestHandler):
                         "chat": "/chat",
                         "about": "/about",
                         "use-model": "/use-model",
+                        "generate-image": "/generate-image",
                     },
                 }
             )
@@ -63,6 +72,9 @@ class StormZeroRequestHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/use-model":
             self._handle_use_model()
+            return
+        if self.path == "/generate-image":
+            self._handle_generate_image()
             return
         self._send_json({"success": False, "status_code": 404, "error": "not found"}, HTTPStatus.NOT_FOUND)
 
@@ -248,6 +260,56 @@ class StormZeroRequestHandler(BaseHTTPRequestHandler):
         ):
             response_payload["tts"] = self._tts_payload_from_text(normalized_response, voice=voice)
         self._send_json(response_payload)
+
+    def _handle_generate_image(self) -> None:
+        if not self._check_image_auth():
+            self._send_json(
+                {"success": False, "status_code": 401, "error": "unauthorized"},
+                HTTPStatus.UNAUTHORIZED,
+            )
+            return
+        try:
+            payload = self._read_json()
+            prompt = str(payload.get("prompt", "")).strip()
+            if not prompt:
+                raise ValueError("prompt is required")
+            image = self._image_generator_instance().generate(prompt)
+        except ValueError as exc:
+            self._send_json({"success": False, "status_code": 400, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        except RuntimeError as exc:
+            self._send_json({"success": False, "status_code": 502, "error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            return
+        except Exception as exc:
+            self._send_json({"success": False, "status_code": 500, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        self._send_json({"success": True, "status_code": 200, "image": image})
+
+    @classmethod
+    def _image_generator_instance(cls) -> ImageGenerator:
+        if cls._image_generator is None:
+            config = cls.agent.config
+            image_config = ImageGenerationConfig(
+                flux_model=config.generate_image_model,
+                coreml_path=config.image_coreml_path,
+                lora_model=config.generate_image_lora_model,
+                device=config.image_device,
+                token=config.huggingface_token,
+                cpu_offload=config.image_cpu_offload,
+                sequential_cpu_offload=config.image_sequential_cpu_offload,
+                compute_unit=config.image_compute_unit,
+                num_inference_steps=config.image_num_inference_steps,
+                guidance_scale=config.image_guidance_scale,
+            )
+            cls._image_generator = create_image_generator(image_config)
+        return cls._image_generator
+
+    def _check_image_auth(self) -> bool:
+        expected = os.environ.get("IMAGE_API_KEY", "").strip()
+        if not expected:
+            return True
+        authorization = self.headers.get("Authorization", "")
+        return hmac.compare_digest(authorization, f"Bearer {expected}")
 
     def _read_json(self) -> dict[str, Any]:
         size = int(self.headers.get("Content-Length", "0"))
