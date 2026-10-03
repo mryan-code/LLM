@@ -62,3 +62,7 @@ def test_config_loads_values_from_env_file(tmp_path: Path) -> None:
     assert config.llm_runtime.n_ctx == 8192
     assert config.llm_runtime.n_batch == 1024
     assert config.llm_runtime.flash_attn is False
+    assert config.llm_realtime_port == 9001
+    assert config.vision_model == (tmp_path / "dedicated_models" / "vision.gguf").resolve()
+    assert config.vision_mmproj == (tmp_path / "dedicated_models" / "vision-mmproj.gguf").resolve()
+    assert config.whisper_model == "base"

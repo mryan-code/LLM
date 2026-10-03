@@ -15,6 +15,11 @@ runtime = [
     "kokoro-onnx",
     "PyMySQL",
 ]
+# Camera and microphone evaluation. websockets hosts the realtime socket; faster-whisper transcribes PCM.
+realtime = [
+    "websockets",
+    "faster-whisper",
+]
 image = [
     "torch",
     "torchvision",

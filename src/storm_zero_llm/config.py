@@ -111,6 +111,11 @@ class StormZeroConfig:
     tts_path: Path
     database: DatabaseConfig | None
     llm_runtime: LLMRuntimeConfig
+    # Realtime camera and microphone evaluation uses a second socket so the HTTP server stays request/response.
+    llm_realtime_port: int
+    vision_model: Path
+    vision_mmproj: Path
+    whisper_model: str
 
     @classmethod
     def load(cls, project_root: str | Path | None = None) -> "StormZeroConfig":
@@ -210,6 +215,19 @@ class StormZeroConfig:
             n_batch=_parse_int(merged.get("LLM_N_BATCH"), 512),
             flash_attn=_parse_bool(merged.get("LLM_FLASH_ATTN"), True),
         )
+        # Default one port above the HTTP server so both can listen without sharing a socket.
+        llm_realtime_port = _parse_int(merged.get("LLM_REALTIME_PORT"), llm_port + 1)
+        vision_model = _resolve_path(
+            root,
+            merged.get("VISION_MODEL"),
+            dedicated_models_path / "vision.gguf",
+        )
+        vision_mmproj = _resolve_path(
+            root,
+            merged.get("VISION_MMPROJ"),
+            dedicated_models_path / "vision-mmproj.gguf",
+        )
+        whisper_model = (merged.get("WHISPER_MODEL") or "base").strip()
 
         return cls(
             project_root=root,
@@ -239,4 +257,8 @@ class StormZeroConfig:
             tts_path=tts_path,
             database=database,
             llm_runtime=llm_runtime,
+            llm_realtime_port=llm_realtime_port,
+            vision_model=vision_model,
+            vision_mmproj=vision_mmproj,
+            whisper_model=whisper_model,
         )

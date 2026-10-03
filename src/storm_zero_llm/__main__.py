@@ -8,6 +8,7 @@ import sys
 
 from storm_zero_llm.agent import StormZeroAgent
 from storm_zero_llm.config import StormZeroConfig
+from storm_zero_llm.realtime_server import start_realtime_server
 from storm_zero_llm.server import run_server
 
 
@@ -31,6 +32,8 @@ def main() -> None:
     # if args.seed_foundation or seed_from_env:
     #     _sync_global_training(agent)
 
+    # The HTTP server stays on LLM_PORT. Camera and microphone traffic uses a separate socket.
+    start_realtime_server(agent)
     try:
         run_server(agent, host=host, port=port)
     finally:
