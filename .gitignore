@@ -19,3 +19,4 @@ models/coreml-urpm-v13/
 custom_models/*.gguf
 dedicated_models/*.gguf
 dedicated_models/tts/*
+.freebuff
