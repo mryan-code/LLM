@@ -52,6 +52,7 @@ def build_realtime_prompt(transcript: str, evaluation: dict[str, str]) -> str:
         f"Scene: {evaluation.get('scene', '')}\n"
         f"People: {evaluation.get('people', '')}\n"
         f"Emotion: {evaluation.get('emotion', '')}\n"
+        f"Text visible to the camera: {evaluation.get('text', '')}\n"
         f"The user said: {transcript}\n"
         "Reply to what they just said. Use the visual evaluation as context."
     )
@@ -114,7 +115,7 @@ class RealtimeSession:
         self.chat_fn = chat_fn
         self.tts_fn = tts_fn
         self.latest_jpeg: bytes | None = None
-        self.latest_evaluation: dict[str, str] = {"scene": "", "people": "", "emotion": ""}
+        self.latest_evaluation: dict[str, str] = {"scene": "", "people": "", "emotion": "", "text": ""}
         self.latest_transcript = ""
         self._frame_dirty = False
         self._vision_running = False
@@ -167,6 +168,7 @@ class RealtimeSession:
                     "scene": _as_text(described.get("scene")),
                     "people": _as_text(described.get("people")),
                     "emotion": _as_text(described.get("emotion")),
+                    "text": _as_text(described.get("text")),
                 }
                 self.latest_evaluation = evaluation
                 heard = self.latest_transcript
@@ -176,6 +178,7 @@ class RealtimeSession:
                     "scene": evaluation["scene"],
                     "people": evaluation["people"],
                     "emotion": evaluation["emotion"],
+                    "text": evaluation["text"],
                     "heard": heard,
                 }
             )

@@ -15,8 +15,9 @@ from typing import Any
 from storm_zero_llm.config import StormZeroConfig
 
 _VISION_PROMPT = (
-    "Describe what you see. Reply with JSON only, using keys scene, people, and emotion. "
-    "scene is the setting, people describes who is visible, and emotion is the apparent feeling."
+    "Describe what you see. Reply with JSON only, using keys scene, people, emotion, and text. "
+    "scene is the setting, people describes who is visible, emotion is the apparent feeling, "
+    "and text is any readable text visible in the image (empty string if none)."
 )
 
 _vision_lock = threading.Lock()
@@ -38,8 +39,9 @@ def parse_vision_text(text: str) -> dict[str, str]:
                 "scene": _text(payload.get("scene")),
                 "people": _text(payload.get("people")),
                 "emotion": _text(payload.get("emotion")),
+                "text": _text(payload.get("text")),
             }
-    return {"scene": text.strip(), "people": "", "emotion": ""}
+    return {"scene": text.strip(), "people": "", "emotion": "", "text": ""}
 
 
 def describe_frame(jpeg: bytes, config: StormZeroConfig) -> dict[str, str]:
@@ -57,7 +59,8 @@ def describe_frame(jpeg: bytes, config: StormZeroConfig) -> dict[str, str]:
             }
         ],
         # The reply is a short JSON object; cap tokens so a frame never blocks the socket.
-        max_tokens=80,
+        # Slightly higher cap to leave room for OCR text.
+        max_tokens=120,
     )
     text = _completion_text(completion)
     return parse_vision_text(text)
