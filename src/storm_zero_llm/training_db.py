@@ -1,4 +1,4 @@
-"""MySQL integration for global and user training layers."""
+"""PostgreSQL integration for global and user training layers."""
 
 from __future__ import annotations
 
@@ -131,18 +131,18 @@ class _LoggingCursor:
         return self._cursor.fetchone()
 
 
-class MySQLTrainingRepository:
+class PostgresTrainingRepository:
     """
-    MySQL access for training/runtime context.
+    PostgreSQL access for training/runtime context.
 
-    `ThreadingHTTPServer` serves each request on its own thread. PyMySQL connections
+    `ThreadingHTTPServer` serves each request on its own thread. psycopg connections
     are not thread-safe, so production instances created via `from_config` keep a
     separate connection per thread. Tests may still pass a shared fake connection.
     """
 
     def __init__(self, connection: Any | None = None, *, config: DatabaseConfig | None = None):
         if connection is None and config is None:
-            raise ValueError("MySQLTrainingRepository requires a connection or config")
+            raise ValueError("PostgresTrainingRepository requires a connection or config")
         self._shared_connection = connection
         self._config = config
         self._thread_state = threading.local()
@@ -158,7 +158,9 @@ class MySQLTrainingRepository:
             self._thread_state.connection = conn
             return conn
         try:
-            conn.ping(reconnect=True)
+            # psycopg has no ping(); a cheap query validates the connection.
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
         except Exception:
             try:
                 conn.close()
@@ -186,24 +188,25 @@ class MySQLTrainingRepository:
 
     def _open_connection(self) -> Any:
         if self._config is None:
-            raise RuntimeError("Cannot open MySQL connection without database config")
+            raise RuntimeError("Cannot open PostgreSQL connection without database config")
         try:
-            import pymysql  # type: ignore
+            import psycopg  # type: ignore
+            from psycopg.rows import dict_row  # type: ignore
         except ImportError as exc:
-            raise RuntimeError("PyMySQL must be installed to use MySQL training sync") from exc
+            raise RuntimeError("psycopg must be installed to use PostgreSQL training sync") from exc
 
-        return pymysql.connect(
+        return psycopg.connect(
             host=self._config.host,
             port=self._config.port,
             user=self._config.user,
             password=self._config.password,
-            database=self._config.name,
-            cursorclass=pymysql.cursors.DictCursor,
+            dbname=self._config.name,
+            row_factory=dict_row,
             autocommit=True,
         )
 
     @classmethod
-    def from_config(cls, config: DatabaseConfig) -> "MySQLTrainingRepository":
+    def from_config(cls, config: DatabaseConfig) -> "PostgresTrainingRepository":
         return cls(config=config)
 
     def close(self) -> None:
@@ -424,10 +427,9 @@ class MySQLTrainingRepository:
         normalized = _normalize_subject(subject)
         with self._cursor() as cursor:
             cursor.execute(
-                "INSERT INTO tbluser_conversation_subject (user_id, subject) VALUES (%s, %s)",
+                "INSERT INTO tbluser_conversation_subject (user_id, subject) VALUES (%s, %s) RETURNING id",
                 (user_id, normalized),
             )
-            cursor.execute("SELECT LAST_INSERT_ID() AS id")
             inserted = cursor.fetchone()
             return int(inserted["id"])
 
@@ -449,20 +451,19 @@ class MySQLTrainingRepository:
             raise ValueError("p2 value is required")
         with self._cursor() as cursor:
             cursor.execute(
-                "SELECT id FROM tbluser_p2 WHERE user_id = %s AND `key` = %s AND deleted = 0 LIMIT 1",
+                'SELECT id FROM tbluser_p2 WHERE user_id = %s AND "key" = %s AND deleted = 0 LIMIT 1',
                 (user_id, normalized_key),
             )
             existing = cursor.fetchone()
             updated = bool(existing and existing.get("id"))
             cursor.execute(
-                "UPDATE tbluser_p2 SET deleted = 1 WHERE user_id = %s AND `key` = %s AND deleted = 0",
+                'UPDATE tbluser_p2 SET deleted = 1 WHERE user_id = %s AND "key" = %s AND deleted = 0',
                 (user_id, normalized_key),
             )
             cursor.execute(
-                "INSERT INTO tbluser_p2 (user_id, `key`, `value`) VALUES (%s, %s, %s)",
+                'INSERT INTO tbluser_p2 (user_id, "key", "value") VALUES (%s, %s, %s) RETURNING id',
                 (user_id, normalized_key, normalized_value),
             )
-            cursor.execute("SELECT LAST_INSERT_ID() AS id")
             inserted = cursor.fetchone()
             return {
                 "id": int(inserted["id"]) if inserted and inserted.get("id") else None,
@@ -503,10 +504,9 @@ class MySQLTrainingRepository:
             }
         with self._cursor() as cursor:
             cursor.execute(
-                "INSERT INTO tbluser_guideline (user_id, guideline) VALUES (%s, %s)",
+                "INSERT INTO tbluser_guideline (user_id, guideline) VALUES (%s, %s) RETURNING id",
                 (user_id, normalized),
             )
-            cursor.execute("SELECT LAST_INSERT_ID() AS id")
             inserted = cursor.fetchone()
             return {
                 "id": int(inserted["id"]) if inserted and inserted.get("id") else None,
@@ -601,10 +601,9 @@ class MySQLTrainingRepository:
             return int(row["id"])
 
         cursor.execute(
-            "INSERT INTO tbluser_conversation_subject (user_id, subject) VALUES (%s, %s)",
+            "INSERT INTO tbluser_conversation_subject (user_id, subject) VALUES (%s, %s) RETURNING id",
             (user_id, subject),
         )
-        cursor.execute("SELECT LAST_INSERT_ID() AS id")
         inserted = cursor.fetchone()
         return int(inserted["id"])
 

@@ -27,7 +27,7 @@ from storm_zero_llm.prompts import (
 from storm_zero_llm.provider import GenerationRequest, GenerationResult, LlamaCppProvider, LocalCompanionProvider
 from storm_zero_llm.reasoning import ReasoningEngine
 from storm_zero_llm.training_db import (
-    MySQLTrainingRepository,
+    PostgresTrainingRepository,
     RuntimeRuleContext,
     pack_conversation_history,
 )
@@ -84,7 +84,7 @@ class StormZeroAgent:
             config.llm_runtime,
             prompts_dir=config.project_root / "prompts",
         )
-        self._db: MySQLTrainingRepository | None = None
+        self._db: PostgresTrainingRepository | None = None
         self._image_generator: ImageGenerator | None = None
         self._request_prompts = threading.local()
 
@@ -984,11 +984,11 @@ class StormZeroAgent:
             )
         return MediaRoute(media_type="image", model_env="GENERATE_IMAGE_MODEL")
 
-    def _db_repo(self) -> MySQLTrainingRepository | None:
+    def _db_repo(self) -> PostgresTrainingRepository | None:
         if self.config.database is None:
             return None
         if self._db is None:
-            self._db = MySQLTrainingRepository.from_config(self.config.database)
+            self._db = PostgresTrainingRepository.from_config(self.config.database)
         return self._db
 
     def _load_rule_context(self, user_id: int) -> RuntimeRuleContext | None:
@@ -1197,7 +1197,7 @@ class StormZeroAgent:
     def _persist_guideline(
         self,
         *,
-        repository: MySQLTrainingRepository,
+        repository: PostgresTrainingRepository,
         user_id: int,
         prompt: str,
         request_params: dict[str, Any],

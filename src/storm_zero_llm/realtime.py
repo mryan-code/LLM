@@ -7,6 +7,7 @@ ends an utterance, and that reply is handed to the existing chat path.
 from __future__ import annotations
 
 import array
+import concurrent.futures
 import importlib
 import math
 import sys
@@ -95,6 +96,23 @@ def _chat_response_text(result: Any) -> str:
     if response is None and isinstance(result, dict):
         response = result.get("response", "")
     return _as_text(response)
+
+
+_CHAT_TIMEOUT_SECS = 30.0
+
+
+def _call_chat_with_timeout(chat_fn: Callable[..., Any], timeout_secs: float, **kwargs: Any) -> Any:
+    """Run the chat path with a timeout so a hung DB (or model) can't block realtime events.
+
+    The transcript event is already queued before this runs, so a timeout still
+    delivers the transcript to the client instead of hanging forever.
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(chat_fn, **kwargs)
+        try:
+            return future.result(timeout=timeout_secs)
+        except concurrent.futures.TimeoutError as exc:
+            raise TimeoutError(f"chat timed out after {timeout_secs:.0f}s") from exc
 
 
 class RealtimeSession:
@@ -245,12 +263,15 @@ class RealtimeSession:
         if not transcript:
             return events
         try:
-            result = self.chat_fn(
+            result = _call_chat_with_timeout(
+                self.chat_fn,
+                _CHAT_TIMEOUT_SECS,
                 user_id=self.user_id,
                 prompt=build_realtime_prompt(transcript, evaluation),
             )
             response = _chat_response_text(result)
         except Exception as exc:
+            print(f"[realtime] chat failed: {exc}", flush=True)
             events.append({"type": "error", "error": str(exc)})
             return events
         reply: dict[str, Any] = {"type": "reply", "response": response}
