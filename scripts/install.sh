@@ -23,12 +23,13 @@ install_coreml_if_needed() {
 case "${1:-runtime}" in
   runtime)
     install_llama_cpp
-    python -m pip install -e ".[runtime,image]"
+    # realtime adds websockets and faster-whisper. Without websockets the camera socket never listens.
+    python -m pip install -e ".[runtime,image,realtime]"
     install_coreml_if_needed
     ;;
   text)
     install_llama_cpp
-    python -m pip install -e ".[runtime]"
+    python -m pip install -e ".[runtime,realtime]"
     ;;
   image)
     python -m pip install -e ".[image]"

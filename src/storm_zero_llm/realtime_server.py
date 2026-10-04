@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import ssl
 import threading
+from pathlib import Path
 from typing import Any
 
 from storm_zero_llm.agent import StormZeroAgent
@@ -19,6 +22,22 @@ from storm_zero_llm.tts import KokoroTTSService
 
 _active_connections: dict[int, Any] = {}
 _active_lock = threading.Lock()
+
+
+def _realtime_ssl_context(project_root: Path) -> ssl.SSLContext | None:
+	"""TLS for the realtime socket, mirroring the API: certificates/<NODE_ENV>-key.pem and -cert.pem."""
+	node_env = (os.environ.get("NODE_ENV") or "dev").strip() or "dev"
+	key_path = Path(project_root) / "certificates" / f"{node_env}-key.pem"
+	cert_path = Path(project_root) / "certificates" / f"{node_env}-cert.pem"
+	if not key_path.is_file() or not cert_path.is_file():
+		print(
+			f"Realtime socket: {key_path.name}/{cert_path.name} not found, using ws://",
+			flush=True,
+		)
+		return None
+	context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+	context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
+	return context
 
 
 def start_realtime_server(agent: StormZeroAgent) -> threading.Thread | None:
@@ -34,6 +53,8 @@ def start_realtime_server(agent: StormZeroAgent) -> threading.Thread | None:
 
     host = agent.config.llm_host
     port = agent.config.llm_realtime_port
+    ssl_context = _realtime_ssl_context(agent.config.project_root)
+    scheme = "wss" if ssl_context else "ws"
     loop = asyncio.new_event_loop()
     ready = threading.Event()
     holder: dict[str, Any] = {}
@@ -41,7 +62,7 @@ def start_realtime_server(agent: StormZeroAgent) -> threading.Thread | None:
     def runner() -> None:
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(_serve(agent, websockets, host, port, ready, holder))
+            loop.run_until_complete(_serve(agent, websockets, host, port, ready, holder, ssl_context))
         except Exception as exc:
             print(f"Realtime socket failed: {exc}", flush=True)
             ready.set()
@@ -52,15 +73,15 @@ def start_realtime_server(agent: StormZeroAgent) -> threading.Thread | None:
     if holder.get("server") is None:
         print("Realtime socket was not started.", flush=True)
         return None
-    print(f"Realtime socket started on ws://{host}:{port}/realtime", flush=True)
+    print(f"Realtime socket started on {scheme}://{host}:{port}/realtime", flush=True)
     return thread
 
 
-async def _serve(agent: StormZeroAgent, websockets: Any, host: str, port: int, ready: threading.Event, holder: dict[str, Any]) -> None:
+async def _serve(agent: StormZeroAgent, websockets: Any, host: str, port: int, ready: threading.Event, holder: dict[str, Any], ssl_context: ssl.SSLContext | None) -> None:
     async def handler(websocket: Any) -> None:
         await handle_connection(agent, websocket)
 
-    server = await websockets.serve(handler, host, port)
+    server = await websockets.serve(handler, host, port, ssl=ssl_context)
     holder["server"] = server
     ready.set()
     await server.wait_closed()
