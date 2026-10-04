@@ -26,7 +26,7 @@ _active_lock = threading.Lock()
 
 def _realtime_ssl_context(project_root: Path) -> ssl.SSLContext | None:
 	"""TLS for the realtime socket, mirroring the API: certificates/<NODE_ENV>-key.pem and -cert.pem."""
-	node_env = (os.environ.get("NODE_ENV") or "dev").strip() or "dev"
+	node_env = (os.environ.get("ENV") or "dev").strip() or "dev"
 	key_path = Path(project_root) / "certificates" / f"{node_env}-key.pem"
 	cert_path = Path(project_root) / "certificates" / f"{node_env}-cert.pem"
 	if not key_path.is_file() or not cert_path.is_file():
