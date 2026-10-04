@@ -186,7 +186,11 @@ def _tts_payload(agent: StormZeroAgent, user_id: int, text: str) -> dict[str, An
 
 
 async def _send(websocket: Any, payload: dict[str, Any]) -> None:
-    await websocket.send(json.dumps(payload))
+    try:
+        await websocket.send(json.dumps(payload))
+    except Exception:
+        # The peer went away (browser closed, bridge restarted). Don't crash the handler.
+        pass
 
 
 def _socket_path(websocket: Any) -> str:
