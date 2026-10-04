@@ -55,7 +55,9 @@ def describe_frame(jpeg: bytes, config: StormZeroConfig) -> dict[str, str]:
                     {"type": "image_url", "image_url": {"url": data_uri}},
                 ],
             }
-        ]
+        ],
+        # The reply is a short JSON object; cap tokens so a frame never blocks the socket.
+        max_tokens=150,
     )
     text = _completion_text(completion)
     return parse_vision_text(text)

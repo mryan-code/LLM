@@ -81,7 +81,9 @@ async def _serve(agent: StormZeroAgent, websockets: Any, host: str, port: int, r
     async def handler(websocket: Any) -> None:
         await handle_connection(agent, websocket)
 
-    server = await websockets.serve(handler, host, port, ssl=ssl_context)
+    # No keepalive pings: this socket is loopback-only with constant frame traffic,
+    # and the vision inference can starve the event loop long enough to trip a ping timeout.
+    server = await websockets.serve(handler, host, port, ssl=ssl_context, ping_interval=None)
     holder["server"] = server
     ready.set()
     await server.wait_closed()
