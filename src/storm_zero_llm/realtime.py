@@ -123,6 +123,7 @@ class RealtimeSession:
         self._silence_ms = 0.0
         self._utterance = bytearray()
         self._lock = threading.Lock()
+        self._audio_packets = 0
 
     def handle_binary(self, payload: bytes) -> list[dict[str, Any]]:
         """Accept one prefixed binary message and return events ready to send."""
@@ -185,9 +186,18 @@ class RealtimeSession:
 
     def _handle_audio(self, pcm: bytes) -> list[dict[str, Any]]:
         with self._lock:
+            self._audio_packets += 1
+            if self._audio_packets == 1 or self._audio_packets % 200 == 0:
+                rms = pcm_rms(pcm)
+                print(
+                    f"[realtime] audio packet #{self._audio_packets}: {len(pcm)} bytes, "
+                    f"rms={rms:.0f} (threshold {SPEECH_RMS_THRESHOLD}), in_speech={self._in_speech}",
+                    flush=True,
+                )
             utterance = self._accept_audio(pcm)
         if utterance is None:
             return []
+        print(f"[realtime] utterance complete: {len(utterance)} bytes, transcribing...", flush=True)
         return self._finish_utterance(utterance)
 
     def _accept_audio(self, pcm: bytes) -> bytes | None:
@@ -225,7 +235,9 @@ class RealtimeSession:
         try:
             transcript = self.transcribe_fn(pcm).strip()
         except Exception as exc:
+            print(f"[realtime] transcription failed: {exc}", flush=True)
             return [{"type": "error", "error": str(exc)}]
+        print(f"[realtime] transcript: {transcript[:120]!r}", flush=True)
         with self._lock:
             self.latest_transcript = transcript
             evaluation = dict(self.latest_evaluation)
